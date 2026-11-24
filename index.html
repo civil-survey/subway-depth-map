@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>지하철 역사심도 지도</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+/* Layout: 좌측 조회 패널 + 지도 + 하단 종단면도. 숫자는 고정폭(Plex Mono), 깊이는 지층 색(황토→청회) */
+:root {
+  --bg: #f3f4f1;
+  --panel: #ffffff;
+  --panel-2: #eef0ec;
+  --line: #d6d9d2;
+  --fg: #1d2420;
+  --muted: #5f6a63;
+  --accent: #1f6f5c;
+  --accent-soft: #dcefe8;
+  --ground: #8a6a3c;
+  --rail: #1f4f8f;
+  --warn: #b5541c;
+  --shadow: 0 1px 2px rgba(20,30,25,.08), 0 4px 16px rgba(20,30,25,.08);
+  --f-ui: "IBM Plex Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  --f-num: "IBM Plex Mono", Consolas, "D2Coding", monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #141816; --panel: #1b201d; --panel-2: #232925; --line: #343c37; --fg: #e5ebe7; --muted: #9aa69f;
+  --accent: #5cc3a4; --accent-soft: #1f3a32; --ground: #d1a866; --rail: #7fb0f0; --warn: #f08a4f;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3); color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #141816; --panel: #1b201d; --panel-2: #232925; --line: #343c37; --fg: #e5ebe7; --muted: #9aa69f;
+  --accent: #5cc3a4; --accent-soft: #1f3a32; --ground: #d1a866; --rail: #7fb0f0; --warn: #f08a4f;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3); color-scheme: dark; }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--f-ui); overflow: hidden; }
+button, input, select { font: inherit; color: inherit; }
+.num { font-family: var(--f-num); font-variant-numeric: tabular-nums; }
+
+.app { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+aside { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; z-index: 1000; }
+.side-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+.brand { display: grid; gap: 2px; }
+.brand h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
+.brand small { color: var(--muted); font-size: 11.5px; }
+.search { position: relative; }
+.search input { width: 100%; padding: 9px 12px 9px 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); outline: none; }
+.search input:focus { border-color: var(--accent); background: var(--panel); }
+.search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; stroke: var(--muted); fill: none; stroke-width: 2; }
+.results { position: absolute; left: 0; right: 0; top: calc(100% + 4px); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); max-height: 320px; overflow: auto; z-index: 5; }
+.results button { display: flex; width: 100%; gap: 8px; align-items: center; padding: 7px 10px; border: 0; background: none; text-align: left; cursor: pointer; }
+.results button:hover, .results button.on { background: var(--accent-soft); }
+.results .d { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+.seg { display: flex; flex-wrap: wrap; gap: 4px; }
+.seg button { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--panel); border-color: var(--fg); }
+.row { display: flex; align-items: center; gap: 8px; justify-content: space-between; flex-wrap: wrap; }
+.lbl { font-size: 11px; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+
+.side-body { overflow: auto; padding: 12px 16px 24px; display: grid; gap: 16px; align-content: start; min-height: 0; }
+.lines { display: flex; flex-wrap: wrap; gap: 4px; }
+.lines button { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; cursor: pointer; opacity: .45; }
+.lines button[aria-pressed="true"] { opacity: 1; }
+.lines i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.lines .cnt { color: var(--muted); font-size: 11px; }
+.mini { border: 0; background: none; color: var(--accent); font-size: 12px; cursor: pointer; padding: 0; }
+
+.pill { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.card-h { padding: 12px 14px; background: var(--panel-2); display: grid; gap: 6px; }
+.card-h h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+.card-h .sub { color: var(--muted); font-size: 12px; }
+.pills { display: flex; gap: 4px; flex-wrap: wrap; }
+.pills .pill { cursor: pointer; }
+.pills .pill.dim { opacity: .5; }
+.figs { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
+.fig { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.fig:nth-child(odd) { border-right: 1px solid var(--line); }
+.fig .k { font-size: 11.5px; color: var(--muted); }
+.fig .v { font-family: var(--f-num); font-size: 20px; font-weight: 500; }
+.fig .v small { font-size: 12px; color: var(--muted); margin-left: 2px; }
+.fig .s { font-size: 11px; color: var(--muted); }
+.section-strip { display: grid; grid-template-columns: 74px 1fr; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); align-items: center; }
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; padding: 12px 14px; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.copy { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 0 6px; font-size: 11px; cursor: pointer; margin-left: 4px; }
+.empty { color: var(--muted); font-size: 13px; border: 1px dashed var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 8px; }
+.note { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+.legend { display: grid; gap: 3px; font-size: 12px; }
+.legend div { display: flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 14px; border-radius: 50%; display: inline-block; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25); }
+
+main { position: relative; display: grid; grid-template-rows: 1fr auto; min-height: 0; min-width: 0; }
+#map { min-height: 0; background: var(--panel-2); }
+.leaflet-container { font: 12px var(--f-ui); }
+.basemaps { position: absolute; top: 10px; right: 10px; z-index: 900; background: var(--panel); border-radius: 10px; box-shadow: var(--shadow); padding: 6px; display: grid; gap: 6px; }
+.basemaps .seg button { font-size: 12px; }
+.overlays { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; padding: 0 4px; }
+.overlays label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+.toggle-side { display: none; }
+
+.profile { background: var(--panel); border-top: 1px solid var(--line); height: 230px; display: grid; grid-template-rows: auto 1fr; min-width: 0; }
+.profile.closed { height: 36px; }
+.profile.closed .pchart { display: none; }
+.phead { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--line); min-width: 0; }
+.phead b { font-size: 13px; }
+.phead .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.phead .sp { margin-left: auto; display: flex; gap: 6px; }
+.pchart { overflow-x: auto; overflow-y: hidden; min-width: 0; }
+.pchart svg { display: block; height: 100%; }
+.pchart text { fill: var(--muted); font-size: 10.5px; font-family: var(--f-ui); }
+.pchart .ax { stroke: var(--line); }
+.pchart .st { cursor: pointer; }
+.pchart .st:hover text, .pchart .st.on text { fill: var(--fg); font-weight: 600; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 2px 10px; font-size: 12px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.stn-label { background: none; border: 0; box-shadow: none; padding: 0; font-weight: 600; font-size: 11px; color: #111; text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 2px #fff; }
+.stn-label::before { display: none; }
+.sat .stn-label { color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000; }
+.leaflet-popup-content { font: 12.5px/1.5 var(--f-ui); margin: 10px 12px; }
+.leaflet-popup-content b { font-size: 13px; }
+
+@media (max-width: 800px) {
+  .app { grid-template-columns: 1fr; }
+  aside { position: absolute; inset: 0 auto 0 0; width: min(360px, 92vw); transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow); padding-top: env(safe-area-inset-top, 0px); }
+  .app.side-open aside { transform: none; }
+  .toggle-side { display: inline-flex; position: absolute; top: 10px; left: max(10px, env(safe-area-inset-left, 0px)); z-index: 900; border: 0; border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); padding: 8px 12px; font-weight: 600; cursor: pointer; }
+  .leaflet-top.leaflet-left { top: 48px; }
+  .basemaps { max-width: calc(100vw - 120px); }
+  .profile { height: 200px; }
+}
+@media (prefers-reduced-motion: reduce) { aside { transition: none; } }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <aside>
+    <div class="side-head">
+      <div class="brand"><h1>지하철 역사심도 지도</h1><small id="meta"></small></div>
+      <div class="search">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" type="search" placeholder="역 이름 검색 (예: 신논현, 반월당)" autocomplete="off">
+        <div class="results" id="results" hidden></div>
+      </div>
+      <div class="row">
+        <div class="seg" id="regions"></div>
+      </div>
+    </div>
+    <div class="side-body">
+      <div id="detail"></div>
+      <div>
+        <div class="row" style="margin-bottom:6px"><span class="lbl">노선 표시</span>
+          <span><button class="mini" id="allOn">모두 켜기</button> · <button class="mini" id="allOff">모두 끄기</button></span></div>
+        <div class="lines" id="lines"></div>
+      </div>
+      <div>
+        <div class="row" style="margin-bottom:6px"><span class="lbl">역 색상 기준</span>
+          <div class="seg" id="colorMode">
+            <button data-v="depth" aria-pressed="true">깊이</button>
+            <button data-v="line" aria-pressed="false">노선색</button>
+            <button data-v="height" aria-pressed="false">지반 표고</button>
+          </div></div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <p class="note">
+        <b>깊이</b>: 지반에서 선로(레일면)까지. 서울교통공사는 선로기준 정거장 깊이, 대구는 지상~도상바닥, 그 외는 각 기관 '역사심도' 값입니다. 음수는 지상(고가)역입니다.<br>
+        <b>표고</b>: 서울교통공사 자료는 공사 기준 EL(해발+100m)에서 100을 뺀 값입니다. 다른 기관 역은 DEM(Copernicus 90m) 추정 표고이므로 수 m 오차가 있습니다.<br>
+        지도 빈 곳을 클릭하면 그 지점의 좌표와 DEM 표고를 볼 수 있습니다.
+      </p>
+    </div>
+  </aside>
+  <main>
+    <button class="toggle-side" id="toggleSide">☰ 목록</button>
+    <div id="map"></div>
+    <div class="basemaps">
+      <div class="seg" id="basemap"></div>
+      <div class="overlays">
+        <label><input type="checkbox" id="ovRoutes" checked> 노선</label>
+        <label><input type="checkbox" id="ovLabels" checked> 역명</label>
+        <label><input type="checkbox" id="ovRail"> 철도선로(ORM)</label>
+      </div>
+    </div>
+    <section class="profile" id="profile">
+      <div class="phead">
+        <b id="ptitle">종단면도</b>
+        <span class="note" id="pnote">역을 선택하면 해당 노선의 지반·레일면 표고를 역 순서대로 보여줍니다.</span>
+        <span class="sp">
+          <button class="btn" id="csvBtn">CSV 내보내기</button>
+          <button class="btn" id="pToggle" aria-expanded="true">접기</button>
+        </span>
+      </div>
+      <div class="pchart" id="pchart"></div>
+    </section>
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
+<script src="data/stations.js"></script>
+<script src="data/routes.js"></script>
+<script>
+(() => {
+const S = window.STATIONS || [], LINES = window.LINES || [], META = window.META || {};
+const LINE = Object.fromEntries(LINES.map(l => [l.key, l]));
+S.forEach((s, i) => { s.id = i; s.key = s.name.replace(/\s|역$/g, ''); });
+const byKey = {}; S.forEach(s => (byKey[s.key] ||= []).push(s));
+const richness = s => (s.depth != null ? 2 : 0) + (s.groundEL != null ? 1 : 0);
+Object.values(byKey).forEach(a => a.sort((x, y) => richness(y) - richness(x)));
+const findByName = n => { n = n.replace(/\s|역$/g, ''); return (byKey[n] || [])[0] || S.find(s => s.name === n); };
+proj4.defs('EPSG:5186', '+proj=tmerc +lat_0=38 +lon_0=127 +k=1 +x_0=200000 +y_0=600000 +ellps=GRS80 +units=m +no_defs');
+
+document.getElementById('meta').textContent = `역 ${META.count || S.length} · 심도 ${META.withDepth || ''} · 갱신 ${(META.built || '').slice(0, 10)}`;
+
+const store = { get(k, d) { try { const v = localStorage.getItem('sdm.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+                set(k, v) { try { localStorage.setItem('sdm.' + k, JSON.stringify(v)); } catch {} } };
+
+// ---------------- map & basemaps
+const map = L.map('map', { zoomControl: true, preferCanvas: true }).setView([37.55, 126.99], 11);
+const vw = (t, ext, opt = {}) => L.tileLayer(`https://xdworld.vworld.kr/2d/${t}/service/{z}/{x}/{y}.${ext}`,
+  Object.assign({ maxNativeZoom: 19, maxZoom: 20, attribution: '© VWorld 국토교통부' }, opt));
+const BASE = {
+  '일반': () => vw('Base', 'png'),
+  '위성': () => L.layerGroup([vw('Satellite', 'jpeg'), vw('Hybrid', 'png')]),
+  '회색': () => vw('white', 'png'),
+  '야간': () => vw('midnight', 'png'),
+  'OSM': () => L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' }),
+};
+let baseLayer, baseName = store.get('base', '일반');
+const bmEl = document.getElementById('basemap');
+Object.keys(BASE).forEach(n => { const b = document.createElement('button'); b.textContent = n; b.dataset.v = n; bmEl.append(b); });
+function setBase(n) {
+  if (!BASE[n]) n = '일반';
+  if (baseLayer) map.removeLayer(baseLayer);
+  baseLayer = BASE[n]().addTo(map); baseName = n; store.set('base', n);
+  bmEl.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === n));
+  document.getElementById('map').classList.toggle('sat', n === '위성' || n === '야간');
+}
+bmEl.onclick = e => e.target.dataset.v && setBase(e.target.dataset.v);
+setBase(baseName);
+
+const orm = L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', { maxZoom: 19, opacity: .8, attribution: '© OpenRailwayMap' });
+document.getElementById('ovRail').onchange = e => e.target.checked ? orm.addTo(map) : map.removeLayer(orm);
+
+// ---------------- state
+const regions = ['전체', '수도권', '부산', '대구', '대전', '광주'];
+let region = store.get('region', '전체');
+let visible = new Set(store.get('lines', LINES.map(l => l.key)));
+let colorMode = store.get('color', 'depth');
+let selected = null;
+
+// ---------------- color scales
+const DEPTH_BINS = [[10, '#f2d49b', '< 10 m'], [15, '#e2a65b', '10–15 m'], [20, '#c47a3d', '15–20 m'],
+  [25, '#8f5a3a', '20–25 m'], [30, '#5b4a6b', '25–30 m'], [999, '#2c3a73', '30 m 이상']];
+const ELEV = '#9cc5a1', NODATA = '#b9bdb7';
+function depthColor(d) { if (d == null) return NODATA; if (d < 0) return ELEV; return DEPTH_BINS.find(b => d < b[0])[1]; }
+const H_BINS = [[10, '#d9ecd0', '< 10 m'], [20, '#a9d39b', '10–20 m'], [30, '#74b072', '20–30 m'], [50, '#4a8a5a', '30–50 m'], [80, '#7d6b3d', '50–80 m'], [9999, '#5a3f22', '80 m 이상']];
+function hColor(h) { if (h == null) return NODATA; return H_BINS.find(b => h < b[0])[1]; }
+function fillOf(s) { return colorMode === 'line' ? (LINE[s.line]?.color || '#888') : colorMode === 'height' ? hColor(s.groundH) : depthColor(s.depth); }
+function renderLegend() {
+  const el = document.getElementById('legend');
+  if (colorMode === 'line') { el.innerHTML = '<div class="note">노선 고유색으로 표시합니다.</div>'; return; }
+  const bins = colorMode === 'depth' ? DEPTH_BINS : H_BINS;
+  el.innerHTML = bins.map(b => `<div><i style="background:${b[1]}"></i>${colorMode === 'depth' ? '깊이' : '표고'} ${b[2]}</div>`).join('') +
+    (colorMode === 'depth' ? `<div><i style="background:${ELEV}"></i>지상·고가역</div>` : '') + `<div><i style="background:${NODATA}"></i>자료 없음</div>`;
+}
+
+// ---------------- routes
+const routeLayer = L.geoJSON(window.ROUTES || { type: 'FeatureCollection', features: [] }, {
+  style: f => ({ color: f.properties.color, weight: 4, opacity: .85, lineCap: 'round' }),
+  interactive: false,
+}).addTo(map);
+function refreshRoutes() {
+  routeLayer.eachLayer(l => { const on = visible.has(l.feature.properties.key) && inRegion(l.feature.properties.key);
+    l.setStyle({ opacity: on ? .85 : 0 }); });
+}
+document.getElementById('ovRoutes').onchange = e => e.target.checked ? routeLayer.addTo(map) : map.removeLayer(routeLayer);
+
+// ---------------- stations
+const stLayer = L.layerGroup().addTo(map);
+const markers = new Map();
+const inRegion = k => region === '전체' || LINE[k]?.region === region;
+function drawStations() {
+  stLayer.clearLayers(); markers.clear();
+  const z = map.getZoom(), r = z >= 15 ? 8 : z >= 13 ? 6.5 : z >= 11 ? 5 : 3.5;
+  const showLbl = document.getElementById('ovLabels').checked && z >= 13;
+  const seen = {};
+  S.forEach(s => {
+    if (!visible.has(s.line) || !inRegion(s.line)) return;
+    const m = L.circleMarker([s.lat, s.lon], { radius: s === selected ? r + 3 : r, color: s === selected ? '#000' : '#fff',
+      weight: s === selected ? 3 : 1.5, fillColor: fillOf(s), fillOpacity: 1 });
+    m.on('click', () => select(s, false));
+    const dup = (seen[s.key] || []).some(p => Math.abs(p[0] - s.lat) < 0.005 && Math.abs(p[1] - s.lon) < 0.006);
+    if (showLbl && !dup) { (seen[s.key] ||= []).push([s.lat, s.lon]); m.bindTooltip(s.name, { permanent: true, direction: 'right', offset: [r + 2, 0], className: 'stn-label' }); }
+    else m.bindTooltip(`${s.name} · ${LINE[s.line].name}${s.depth != null ? ' · ' + s.depth + 'm' : ''}`, { direction: 'top' });
+    m.addTo(stLayer); markers.set(s.id, m);
+  });
+}
+map.on('zoomend', drawStations);
+document.getElementById('ovLabels').onchange = drawStations;
+
+// ---------------- sidebar controls
+const regEl = document.getElementById('regions');
+regEl.innerHTML = regions.map(r => `<button data-v="${r}" aria-pressed="${r === region}">${r}</button>`).join('');
+regEl.onclick = e => { const v = e.target.dataset.v; if (!v) return; region = v; store.set('region', v);
+  regEl.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v)); renderLines(); refresh();
+  const pts = S.filter(s => inRegion(s.line) && visible.has(s.line)).map(s => [s.lat, s.lon]);
+  if (pts.length) map.fitBounds(pts, { padding: [30, 30] }); };
+
+const linesEl = document.getElementById('lines');
+function renderLines() {
+  const cnt = {}; S.forEach(s => cnt[s.line] = (cnt[s.line] || 0) + 1);
+  linesEl.innerHTML = LINES.filter(l => inRegion(l.key) && cnt[l.key]).map(l =>
+    `<button data-k="${l.key}" aria-pressed="${visible.has(l.key)}"><i style="background:${l.color}"></i>${l.name} <span class="cnt">${cnt[l.key]}</span></button>`).join('');
+}
+linesEl.onclick = e => { const b = e.target.closest('button'); if (!b) return; const k = b.dataset.k;
+  visible.has(k) ? visible.delete(k) : visible.add(k); b.setAttribute('aria-pressed', visible.has(k)); store.set('lines', [...visible]); refresh(); };
+document.getElementById('allOn').onclick = () => { LINES.forEach(l => inRegion(l.key) && visible.add(l.key)); store.set('lines', [...visible]); renderLines(); refresh(); };
+document.getElementById('allOff').onclick = () => { LINES.forEach(l => inRegion(l.key) && visible.delete(l.key)); store.set('lines', [...visible]); renderLines(); refresh(); };
+
+const cmEl = document.getElementById('colorMode');
+cmEl.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === colorMode));
+cmEl.onclick = e => { const v = e.target.dataset.v; if (!v) return; colorMode = v; store.set('color', v);
+  cmEl.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v)); renderLegend(); drawStations(); };
+
+function refresh() { refreshRoutes(); drawStations(); }
+
+// ---------------- search
+const q = document.getElementById('q'), res = document.getElementById('results');
+let hits = [], hi = 0;
+q.oninput = () => {
+  const t = q.value.replace(/\s/g, '');
+  if (!t) { res.hidden = true; return; }
+  hits = S.filter(s => s.name.replace(/\s/g, '').includes(t) || (s.fullName || '').includes(t))
+    .sort((a, b) => (a.key.startsWith(t) ? 0 : 1) - (b.key.startsWith(t) ? 0 : 1) || a.name.length - b.name.length).slice(0, 40);
+  hi = 0; renderHits();
+};
+function renderHits() {
+  res.hidden = !hits.length;
+  res.innerHTML = hits.map((s, i) => `<button data-i="${i}" class="${i === hi ? 'on' : ''}"><span class="pill" style="background:${LINE[s.line].color}">${LINE[s.line].name}</span>${s.name}<span class="d num">${s.depth != null ? s.depth + ' m' : ''}</span></button>`).join('');
+}
+res.onclick = e => { const b = e.target.closest('button'); if (b) { select(hits[+b.dataset.i], true); res.hidden = true; q.blur(); } };
+q.onkeydown = e => {
+  if (res.hidden) return;
+  if (e.key === 'ArrowDown') { hi = Math.min(hi + 1, hits.length - 1); renderHits(); e.preventDefault(); }
+  if (e.key === 'ArrowUp') { hi = Math.max(hi - 1, 0); renderHits(); e.preventDefault(); }
+  if (e.key === 'Enter' && hits[hi]) { select(hits[hi], true); res.hidden = true; q.blur(); }
+  if (e.key === 'Escape') res.hidden = true;
+};
+document.addEventListener('click', e => { if (!e.target.closest('.search')) res.hidden = true; });
+
+// ---------------- detail
+const f1 = (v, d = 2) => v == null ? '–' : (+v).toFixed(d);
+function copyText(t, btn) {
+  const done = () => { const o = btn.textContent; btn.textContent = '복사됨'; setTimeout(() => btn.textContent = o, 1200); };
+  (navigator.clipboard?.writeText(t) || Promise.reject()).then(done).catch(() => { const r = document.createRange(); r.selectNodeContents(btn.previousElementSibling); getSelection().removeAllRanges(); getSelection().addRange(r); });
+}
+function sectionSvg(s) {
+  // 지반-승강장-선로 단면 미니 그림 (깊이 비례)
+  const D = s.depth, P = s.depthPlatform;
+  if (D == null) return '<svg viewBox="0 0 74 60" width="74" height="60"><text x="37" y="34" text-anchor="middle" font-size="10" fill="currentColor" opacity=".6">자료없음</text></svg>';
+  const max = 40, h = 52, y0 = 6;
+  if (D < 0) {
+    const y = y0 + 30 - Math.min(-D, 30) / 30 * 26;
+    return `<svg viewBox="0 0 74 60" width="74" height="60"><rect x="0" y="${y0 + 30}" width="74" height="24" fill="var(--ground)" opacity=".35"/><line x1="0" x2="74" y1="${y0 + 30}" y2="${y0 + 30}" stroke="var(--ground)" stroke-width="2"/>
+      <rect x="22" y="${y}" width="30" height="6" fill="var(--rail)"/><line x1="30" x2="30" y1="${y + 6}" y2="${y0 + 30}" stroke="var(--rail)"/><line x1="44" x2="44" y1="${y + 6}" y2="${y0 + 30}" stroke="var(--rail)"/></svg>`;
+  }
+  const yd = y0 + Math.min(D, max) / max * h;
+  const yp = P != null ? y0 + Math.min(P, max) / max * h : null;
+  return `<svg viewBox="0 0 74 60" width="74" height="60"><rect x="0" y="${y0}" width="74" height="${h}" fill="var(--ground)" opacity=".18"/>
+    <line x1="0" x2="74" y1="${y0}" y2="${y0}" stroke="var(--ground)" stroke-width="2"/>
+    <line x1="37" x2="37" y1="${y0}" y2="${yd}" stroke="var(--muted)" stroke-dasharray="2 2"/>
+    <rect x="16" y="${yd - 9}" width="42" height="11" fill="none" stroke="var(--rail)" stroke-width="1.5"/>
+    ${yp != null ? `<line x1="18" x2="56" y1="${yp}" y2="${yp}" stroke="var(--rail)" stroke-width="1" opacity=".6"/>` : ''}
+    <line x1="16" x2="58" y1="${yd}" y2="${yd}" stroke="var(--rail)" stroke-width="2.5"/></svg>`;
+}
+function renderDetail() {
+  const el = document.getElementById('detail');
+  if (!selected) {
+    el.innerHTML = `<div class="empty"><b style="color:var(--fg)">역을 선택하세요</b>지도에서 역을 클릭하거나 위 검색창에 역 이름을 입력하면 깊이, 지반·레일면 표고, 층수, 출처를 여기에 보여줍니다.</div>`;
+    return;
+  }
+  const s = selected, L0 = LINE[s.line];
+  const same = (byKey[s.key] || []).filter(o => Math.hypot(o.lat - s.lat, o.lon - s.lon) < 0.01);
+  const tm = proj4('EPSG:4326', 'EPSG:5186', [s.lon, s.lat]);
+  const elevated = s.depth != null && s.depth < 0;
+  el.innerHTML = `<div class="card">
+    <div class="card-h">
+      <div class="pills">${same.map(o => `<span class="pill ${o === s ? '' : 'dim'}" data-id="${o.id}" style="background:${LINE[o.line].color}">${LINE[o.line].name}</span>`).join('')}</div>
+      <h2>${s.name}</h2>
+      <div class="sub">${s.fullName && s.fullName !== s.name ? s.fullName + ' · ' : ''}${s.lineName || ''}${s.op ? ' · ' + s.op : ''}</div>
+    </div>
+    <div class="figs">
+      <div class="fig"><div class="k">${elevated ? '지상 높이' : '깊이 (선로 기준)'}</div><div class="v">${f1(elevated ? -s.depth : s.depth, 2)}<small>m</small></div><div class="s">${s.depthDef || '심도 자료 없음'}</div></div>
+      <div class="fig"><div class="k">승강장 기준 깊이</div><div class="v">${f1(s.depthPlatform)}<small>m</small></div><div class="s">${s.depthPlatform != null ? '서울교통공사' : '자료 없음'}</div></div>
+      <div class="fig"><div class="k">지반 표고</div><div class="v">${f1(s.groundH, s.hSrc && s.hSrc.startsWith('DEM') ? 1 : 2)}<small>m</small></div><div class="s">${s.hSrc || ''}</div></div>
+      <div class="fig"><div class="k">레일면 표고</div><div class="v">${f1(s.railH, s.groundEL != null ? 2 : 1)}<small>m</small></div><div class="s">${s.railEL != null ? '레일면고 EL ' + f1(s.railEL) : s.railH != null ? '지반 표고 − 깊이' : '–'}</div></div>
+    </div>
+    <div class="section-strip">${sectionSvg(s)}<div class="note">${s.groundEL != null ? `공사 기준 EL: 지반고 <span class="num">${f1(s.groundEL)}</span>, 레일면고 <span class="num">${f1(s.railEL)}</span><br>` : ''}DEM 표고 <span class="num">${f1(s.demH, 1)}</span> m${s.groundH != null && s.demH != null && s.groundEL != null ? ` (공사 자료와 차이 <span class="num">${(s.demH - s.groundH).toFixed(1)}</span> m)` : ''}</div></div>
+    <dl class="kv">
+      ${s.floors ? `<dt>층수 / 형식</dt><dd>${s.floors}${s.form ? ' · ' + s.form : ''}</dd>` : ''}
+      ${s.transfer || s.note ? `<dt>환승 / 비고</dt><dd>${[s.transfer, s.note].filter(Boolean).join(' · ')}</dd>` : ''}
+      ${s.built ? `<dt>준공</dt><dd>${s.built}${s.platformLen ? ' · 정거장 길이 ' + s.platformLen + 'm' : ''}${s.area ? ' · 면적 ' + Number(s.area).toLocaleString() + '㎡' : ''}</dd>` : ''}
+      <dt>WGS84</dt><dd><span class="num">${s.lat.toFixed(6)}, ${s.lon.toFixed(6)}</span><button class="copy" data-c="${s.lat.toFixed(6)}, ${s.lon.toFixed(6)}">복사</button></dd>
+      <dt>TM(EPSG:5186)</dt><dd><span class="num">X ${tm[1].toFixed(2)}  Y ${tm[0].toFixed(2)}</span><button class="copy" data-c="${tm[1].toFixed(3)}\t${tm[0].toFixed(3)}">복사</button></dd>
+      ${s.xyNote ? `<dt>좌표 메모</dt><dd style="color:var(--warn)">${s.xyNote}</dd>` : ''}
+      <dt>출처</dt><dd>${s.src}</dd>
+    </dl></div>`;
+  el.querySelectorAll('.copy').forEach(b => b.onclick = () => copyText(b.dataset.c, b));
+  el.querySelectorAll('.pill[data-id]').forEach(p => p.onclick = () => select(S[+p.dataset.id], false));
+}
+
+function select(s, fly) {
+  selected = s;
+  if (!visible.has(s.line)) { visible.add(s.line); renderLines(); refreshRoutes(); }
+  if (!inRegion(s.line)) { region = '전체'; regEl.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === '전체')); renderLines(); refreshRoutes(); }
+  if (fly) map.flyTo([s.lat, s.lon], Math.max(map.getZoom(), 15), { duration: .6 });
+  drawStations(); renderDetail(); renderProfile();
+  document.getElementById('app').classList.remove('side-open');
+  if (window.innerWidth <= 800 && !fly) document.getElementById('app').classList.add('side-open');
+}
+
+// ---------------- profile (종단면도)
+let profRows = [];
+function renderProfile() {
+  const box = document.getElementById('pchart'), title = document.getElementById('ptitle'), note = document.getElementById('pnote');
+  if (!selected) return;
+  const L0 = LINE[selected.line];
+  let rows = S.filter(s => s.line === selected.line && s.order != null).sort((a, b) => a.order - b.order);
+  const ordered = rows.length > 1;
+  if (!ordered) rows = S.filter(s => s.line === selected.line);
+  profRows = rows;
+  title.innerHTML = `<span class="pill" style="background:${L0.color}">${L0.name}</span> 종단면도`;
+  if (!ordered) { note.textContent = '이 노선은 기관 심도 자료가 없어 종단면도를 그릴 수 없습니다. (CSV 내보내기는 가능)'; box.innerHTML = ''; return; }
+  note.textContent = `역 ${rows.length}개 · 원본 자료 순서 · 갈색: 지반 표고, 파랑: 레일면 표고 (m)`;
+  const W = Math.max(box.clientWidth, rows.length * 34 + 60), H = box.clientHeight || 190;
+  const padL = 44, padR = 16, padT = 10, padB = 62;
+  const vals = rows.flatMap(r => [r.groundH, r.railH]).filter(v => v != null);
+  let lo = Math.floor((Math.min(...vals) - 2) / 10) * 10, hi2 = Math.ceil((Math.max(...vals) + 2) / 10) * 10;
+  if (!isFinite(lo)) { lo = -20; hi2 = 40; }
+  const x = i => padL + (rows.length === 1 ? 0 : i * (W - padL - padR) / (rows.length - 1));
+  const y = v => padT + (hi2 - v) / (hi2 - lo) * (H - padT - padB);
+  const step = (hi2 - lo) > 80 ? 20 : 10;
+  let g = '';
+  for (let v = lo; v <= hi2; v += step) g += `<line class="ax" x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/><text x="${padL - 6}" y="${y(v) + 3}" text-anchor="end">${v}</text>`;
+  const path = k => { let d = '', pen = false; rows.forEach((r, i) => { if (r[k] == null) { pen = false; return; } d += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(r[k]).toFixed(1); pen = true; }); return d; };
+  // 지반~레일 사이 채움
+  let fill = '';
+  rows.forEach((r, i) => { if (i && r.groundH != null && r.railH != null && rows[i - 1].groundH != null && rows[i - 1].railH != null) {
+    const a = rows[i - 1]; fill += `<path d="M${x(i - 1)} ${y(a.groundH)}L${x(i)} ${y(r.groundH)}L${x(i)} ${y(r.railH)}L${x(i - 1)} ${y(a.railH)}Z" fill="var(--ground)" opacity=".13"/>`; } });
+  const pts = rows.map((r, i) => `<g class="st ${r === selected ? 'on' : ''}" data-id="${r.id}">
+      <rect x="${x(i) - 14}" y="${padT}" width="28" height="${H - padT}" fill="transparent"/>
+      ${r === selected ? `<line x1="${x(i)}" x2="${x(i)}" y1="${padT}" y2="${H - padB}" stroke="var(--accent)" stroke-width="1.5"/>` : ''}
+      ${r.groundH != null ? `<circle cx="${x(i)}" cy="${y(r.groundH)}" r="3" fill="var(--ground)"/>` : ''}
+      ${r.railH != null ? `<circle cx="${x(i)}" cy="${y(r.railH)}" r="3.2" fill="var(--rail)"/>` : ''}
+      <title>${r.name}  지반 ${f1(r.groundH, 1)} m / 레일 ${f1(r.railH, 1)} m / 깊이 ${f1(r.depth, 1)} m</title>
+      <text transform="translate(${x(i) + 3},${H - padB + 8}) rotate(55)">${r.name}</text></g>`).join('');
+  box.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${g}${fill}
+    <path d="${path('groundH')}" fill="none" stroke="var(--ground)" stroke-width="2"/>
+    <path d="${path('railH')}" fill="none" stroke="var(--rail)" stroke-width="2"/>${pts}</svg>`;
+  box.querySelectorAll('.st').forEach(e => e.onclick = () => select(S[+e.dataset.id], true));
+  const sel = rows.indexOf(selected); if (sel >= 0) box.scrollLeft = Math.max(0, x(sel) - box.clientWidth / 2);
+}
+document.getElementById('pToggle').onclick = e => { const p = document.getElementById('profile'); p.classList.toggle('closed');
+  const c = p.classList.contains('closed'); e.target.textContent = c ? '펼치기' : '접기'; e.target.setAttribute('aria-expanded', !c); setTimeout(() => { map.invalidateSize(); renderProfile(); }, 50); };
+window.addEventListener('resize', () => renderProfile());
+
+// ---------------- CSV
+document.getElementById('csvBtn').onclick = () => {
+  const rows = selected ? profRows : S.filter(s => visible.has(s.line) && inRegion(s.line));
+  const cols = [['노선', s => LINE[s.line].name], ['역명', s => s.name], ['위도', s => s.lat], ['경도', s => s.lon], ['깊이_선로기준', s => s.depth], ['깊이_승강장기준', s => s.depthPlatform],
+    ['지반표고', s => s.groundH], ['레일면표고', s => s.railH], ['표고출처', s => s.hSrc], ['DEM표고', s => s.demH], ['공사EL_지반고', s => s.groundEL], ['공사EL_레일면고', s => s.railEL],
+    ['층수', s => s.floors], ['형식', s => s.form], ['비고', s => [s.transfer, s.note].filter(Boolean).join(' ')], ['출처', s => s.src]];
+  const esc = v => v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v;
+  const csv = '﻿' + [cols.map(c => c[0]).join(','), ...rows.map(s => cols.map(c => esc(c[1](s))).join(','))].join('\r\n');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = `역사심도_${selected ? LINE[selected.line].name : region}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+};
+
+// ---------------- 지도 클릭: 좌표 + DEM 표고
+map.on('click', e => {
+  const { lat, lng } = e.latlng, tm = proj4('EPSG:4326', 'EPSG:5186', [lng, lat]);
+  const near = S.filter(s => visible.has(s.line)).map(s => [s, map.distance(e.latlng, [s.lat, s.lon])]).sort((a, b) => a[1] - b[1])[0];
+  const pop = L.popup().setLatLng(e.latlng).setContent(`<b>선택 지점</b><br><span class="num">${lat.toFixed(6)}, ${lng.toFixed(6)}</span><br>TM <span class="num">X ${tm[1].toFixed(2)} Y ${tm[0].toFixed(2)}</span><br>DEM 표고 <span class="num" id="pe">조회 중…</span>${near ? `<br>가장 가까운 역: ${near[0].name} (${LINE[near[0].line].name}) <span class="num">${Math.round(near[1])} m</span>` : ''}`).openOn(map);
+  fetch(`https://api.open-meteo.com/v1/elevation?latitude=${lat.toFixed(5)}&longitude=${lng.toFixed(5)}`).then(r => r.json())
+    .then(j => { const el = document.getElementById('pe'); if (el) el.textContent = j.elevation[0].toFixed(1) + ' m (Copernicus 90m)'; })
+    .catch(() => { const el = document.getElementById('pe'); if (el) el.textContent = '조회 실패(인터넷 연결 확인)'; });
+});
+
+document.getElementById('toggleSide').onclick = () => document.getElementById('app').classList.toggle('side-open');
+
+// ---------------- init
+renderLines(); renderLegend(); refresh(); renderDetail();
+new ResizeObserver(() => map.invalidateSize()).observe(document.getElementById('map'));
+const hash = decodeURIComponent(location.hash.slice(1));
+const init = hash && findByName(hash);
+if (init) requestAnimationFrame(() => { map.invalidateSize(); select(init, true); });
+window.addEventListener('hashchange', () => { const s = findByName(decodeURIComponent(location.hash.slice(1))); if (s) select(s, true); });
+})();
+</script>
+</body>
+</html>
